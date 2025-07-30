@@ -1,4 +1,4 @@
-### The following code is a Rmarkdown script used to quantify the probability and magnitude of habitat suitability degradation under future climatic water deficit scenarios
+### The following code is a Rmarkdown script used to illustrate and quantify the probability and magnitude of habitat suitability degradation under future climatic water deficit scenarios
 
 # Clear workspace
 rm(list = ls())
