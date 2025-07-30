@@ -1,0 +1,392 @@
+### The following code is a Rmarkdown script used to generate boosted regression trees to predict varied thrush distribution across the NWFP
+### We load and clean the data, check for colinearity between predictors, split the data, tune the hyperparameters, build the model using the training data,
+###   predict using test data, evaluate performance, then create a species distribution map for current and end-century climatic water deficit scenarios
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Set up
+```{r}
+
+rm(list = ls())
+gc()
+
+# Load all packages for the script
+library(knitr)
+library(raster)
+library(pROC)
+library(dismo)
+library(gbm)
+library(sf)
+library(car)
+library(corrplot)
+library(dplyr)
+library(ggplot2)
+
+# Load species data 
+station_summary <- read.csv("station_summary.csv")
+# -9999 is NA placeholder in GIS; replace with avg TDI of other stations within hex
+station_summary$TDI_270[station_summary$TDI_270 == -9999] <- 90
+
+# Create model data, select and scale variables of interest
+model_data <- data.frame(
+  presence = as.factor(station_summary$IXNA), 
+  TDI_270mn = scale(station_summary$TDI_270),
+  CWDmn = scale(station_summary$CWD),
+  FRmn = scale(station_summary$FR),
+  STNDHGTmn = scale(station_summary$STNDHGT),
+  OGSImn = scale(station_summary$OGSI),
+  CANCOVmn = scale(station_summary$CANCOV),
+  ELEVmn = scale(station_summary$ELEVmn),
+  mTPI_270 = scale(station_summary$mTPI_270)
+)
+
+# Model data should look like this:
+  # head(model_data)
+#   presence   TDI_270mn     CWDmn        FRmn   STNDHGTmn     OGSImn   CANCOVmn    ELEVmn    mTPI_270
+#   0        -0.06762638  1.455687  1.07969048  0.08385578  0.4692516  0.9723381 -1.518251 -0.37721324
+#   0        -0.92706770  1.405185 -0.06121908  0.28806391 -0.4943273  0.7411321 -1.335234  0.22553387
+#   0         0.02786710  1.304183  1.53605430 -0.01824828  0.3951302  0.9145366 -1.524420 -0.01933214
+#   0        -0.16311986  1.556689  1.53605430  0.18595985  0.6916160  0.9145366 -1.592280 -0.69742263
+#   0        -0.97481444  1.405185  1.00362984 -0.12035234  0.5433731  0.1053157 -1.232415  1.33684884
+#   1        -0.40185356 -1.826895 -2.11485628 -0.42666452 -0.5684487 -0.5305008 -1.686874  0.24436971
+
+## We have detection/non-detection data (0/1) and eight scaled environmental covariates
+  
+```
+
+# Covariate evalutation
+```{r}
+
+covar_names <- c(
+  mTPI_270 = "Topographic positional index",
+  ELEVmn = "Elevation",
+  FR = "Fire refugia",
+  CWD = "Climatic Water Deficit",
+  TDI_270 = "Topographic diversity index",
+  CANCOV = "Canopy cover",
+  OSGI = "Old-growth structural index",
+  STNDHGT = "Stand height")
+
+short_covar_names <- c(
+  mTPI_270 = "mTPI",
+  ELEVmn = "Elev",
+  FR = "Fr",
+  CWD = "CWD",
+  TDI_270 = "TDI",
+  CANCOV = "CanCov",
+  OSGI = "OGSI",
+  STNDHGT = "StHgt")
+
+# Make correlation plot
+correl = cor(train_data[,2:9],method='spearman')
+colnames(correl) <- covar_names
+rownames(correl) <- short_covar_names
+corrplot(correl, method = "color", tl.cex = 0.8, type = "lower", order = "hclust", tl.col = "black", tl.srt = 45)
+# No absolute value above 0.7
+
+# Additional check for colinearity
+# fit glm
+model <- glm(presence ~ ., data = model_data, family = binomial)
+
+# VIF values
+vif <- vif(model)
+print(vif)
+# No VIF value exceeds 3.1
+
+```
+
+# Data prep
+## Split the data
+## Specify tuning parameters
+```{r}
+
+# Split data into training and testing sets
+set.seed(1234)  # For reproducibility
+n <- nrow(model_data)
+indices <- sample(1:n)  # Shuffle indices
+
+## Split 60/20/20 for train/tune/test
+train_index <- indices[1:floor(0.6 * n)]
+tune_index <- indices[(floor(0.6 * n) + 1):floor(0.8 * n)]
+test_index <- indices[(floor(0.8 * n) + 1):n]
+train_data <- model_data[train_index, ]
+tune_data <- model_data[tune_index, ]
+test_data <- model_data[test_index, ]
+
+# Specify tuning parameters
+depths = c(1:9) # this should be 1:max number of parameters
+lrs = c(0.001, 0.005, 0.01, 0.05) 
+ntrees = seq(50,3000,50) 
+
+# Set presence column to factor for gbm
+train_data$presence <- ifelse(train_data$presence == 1, 1, 0)
+tune_data$presence <- ifelse(tune_data$presence == 1, 1, 0)
+
+```
+
+# Tune the model to identify optimal parameters
+```{r}
+
+# Using tuning set to identify parameters at which AUC is highest
+valAUCs = array(data=NA,dim=c(length(depths),length(lrs),length(ntrees)))
+ for (d in 1:length(depths)) {
+   for (l in 1:length(lrs)) {
+     for (n in 1:length(ntrees)) {
+       BRT = gbm(presence ~ .,
+              data=train_data,
+              interaction.depth=depths[d],
+              shrinkage=lrs[l],
+              n.trees=ntrees[n])
+       preds = predict(BRT,
+                   newdata=tune_data,
+                    n.trees=ntrees[n], 
+                    na.rm=TRUE, 
+                    type="response")
+       roc_curve = roc(response = tune_data$presence, predictor = preds)
+       valAUCs[d,l,n] = roc_curve$auc
+     }
+   }
+ }
+
+### This will take a while to run.
+### Afterwards, save it using the line below, then comment out the code above and upload the results using the valAUCS <- readRDS()
+saveRDS(valAUCs, "valAUCs.RDS") 
+# valAUCs <- readRDS("valAUCs.RDS")
+
+# Optimal depth, learning rate, number of trees
+bestValIdxs = which(valAUCs==max(valAUCs),arr.ind=TRUE)
+best_depth = depths[bestValIdxs[1]] # 9L
+best_lr = lrs[bestValIdxs[2]] # 0.005
+best_ntree = ntrees[bestValIdxs[3]] # 1,000
+
+```
+
+# Optional - visualize the different parameters tested
+```{r warning=F}
+
+# Create a df of valAUCs for plotting
+valAUCs_df <- expand.grid(
+  Depth = 1:9, 
+  LearningRate = c(0.001, 0.005, 0.01, 0.05),
+  NumTrees = seq(50, 3000, 50)
+)
+valAUCs_df$AUC <- c(as.vector(valAUCs))
+
+# AUC by Learning Rate
+byLR <- ggplot(valAUCs_df, aes(x = NumTrees, y = AUC, color = factor(Depth))) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ LearningRate, labeller = labeller(LearningRate = function(x) paste0("LR = ", x))) +
+  geom_vline(xintercept = 150, linetype = "dashed", color = "black") +  # Best ntree
+  geom_hline(yintercept = max(valAUCs_df$AUC), linetype = "dashed", color = "red") +  # Max AUC
+  labs(title = "AUC vs ntrees (by Learning Rate)", x = "Number of Trees", y = "AUC", color = "Depth") +
+  theme_minimal()
+
+byLR
+
+## Save plot
+ggsave("SI_byLR.png", plot = byLR, height = 7, width = 11, bg = "white")
+
+```
+
+# Train and run the model
+```{r}
+
+# Train BRT with optimal parameters 
+ BRT_all = gbm(presence ~ .,
+              data=train_data,
+              interaction.depth=best_depth,
+              shrinkage=best_lr,
+              n.trees=best_ntree)
+
+### Again, this will take a while to run. Save to read in as an RDS for future use.
+saveRDS(BRT_all, "BRT_all.RDS")
+# BRT_all <- readRDS("BRT_all.RDS")
+
+# Predict
+preds_BRT_all = predict(BRT_all, 
+                   newdata=test_data,
+                   n.trees=best_ntree, 
+                   na.rm=TRUE, 
+                   type="response")
+ 
+saveRDS(preds_BRT_all, "preds_BRT_all.RDS")
+# preds_BRT_all <- readRDS("preds_BRT_all.RDS")
+
+```
+
+# Assess the model
+```{r}
+
+# Overall summary including relative importance plot
+summary(BRT_all)
+
+# Set presence column to numeric for evaluation
+test_data$presence <- as.numeric(as.character(test_data$presence))
+
+# Calculate model deviance (GoF)
+deviance <- calc.deviance(obs=test_data$presence, pred=preds_BRT_all, calc.mean=TRUE)
+cat("Deviance:", deviance, "\n")
+
+# Calculate model correlation
+d <- cbind(test_data$presence, preds_BRT_all)
+pres <- d[d[,1]==1, 2]
+abs <- d[d[,1]==0, 2]
+e <- evaluate(p=pres, a=abs)
+e
+
+# Calculate model AUC
+ROC = roc(response=test_data$presence,
+               predictor=preds_BRT_all)
+
+## Plot ROC curve
+plot(ROC)
+legend(x="bottomright",
+       legend=c(paste("BRT AUC:",round((ROC$auc),digits=3))))
+
+```
+
+# Predict distribution across NWFP
+```{r}
+
+# All covariate .tif files from your directory
+raster_files <- c("CANCOVmn.tif", 
+                  "OGSImn.tif",
+                  "CWDmn.tif",
+                  "FRmn.tif",
+                  "ELEVmn.tif",
+                  "mTPI_270.tif",
+                  "STNDHGTmn.tif",
+                  "TDI_270mn.tif"
+                  )
+
+# Load each raster into a list
+raster_list <- lapply(raster_files, raster)
+ 
+# Stack the rasters
+raster_stack <- stack(raster_list)
+ 
+# Set layer names
+layer_names <- basename(tools::file_path_sans_ext(raster_files))
+names(raster_stack) <- layer_names
+ 
+# Clip rasters to NWFP boundary
+boundary <- read_sf("PAL-polygon.shp") # NWFP boundary from https://services1.arcgis.com/gGHDlz6USftL5Pau/arcgis/rest/services/NWFP_Boundary_2002/FeatureServer 
+raster_stack <- mask(raster_stack, boundary)
+ 
+# Scale the raster stack
+raster_stack <- scale(raster_stack)
+ 
+# Save the processed raster stack as a GeoTIFF file
+writeRaster(raster_stack, "raster_stack.tif", format = "GTiff", overwrite = TRUE)
+# raster_stack <- stack("raster_stack.tif")
+# layer_names <- basename(tools::file_path_sans_ext(raster_files))
+# names(raster_stack) <- layer_names
+
+```
+
+# Plot predicted distribution
+```{r}
+
+# Predict distribution
+p <- predict(raster_stack, 
+              BRT_all, 
+              n.trees=BRT_all$gbm.call$best.trees, 
+              na.rm=TRUE, 
+              type="response")
+ 
+saveRDS(p, "p.RDS")
+# p <- readRDS("p.RDS")
+
+# Plot predicted distribution
+plot(p, main='IXNA predicted distribution', box = FALSE, axes = FALSE)
+
+```
+
+# Clip to only forest-capable land
+```{r}
+
+# Upload forest capable raster and mask
+forestcover <- raster("Export_forestcover.tif") # from EC JRC global map of forest cover http://data.europa.eu/89h/e554d6fb-6340-45d5-9309-332337e5bc26
+forestcover <- mask(forestcover, boundary)
+forestcover <- calc(forestcover, fun = function(x) { x[is.na(x)] <- 0; return(x) })
+ 
+writeRaster(forestcover, filename="IXNA_forestcover.tif", overwrite=TRUE)
+# forestcover <- raster("IXNA_forestcover.tif")
+
+# Crop & resample p
+forestcover <- crop(forestcover, extent(p))
+forestcover <- resample(forestcover, p, method="ngb")
+masked_p <- mask(p, forestcover, maskvalue=0)
+ 
+writeRaster(masked_p, filename="IXNA_masked_p.tif", overwrite=TRUE)
+saveRDS(masked_p,"IXNA_masked_p.RDS")
+# masked_p <- raster("IXNA_masked_p.tif")
+
+# Plot predicted distribution
+plot(masked_p, main='IXNA predicted distribution (masked)', box = FALSE, axes = FALSE)
+
+```
+
+# Project distribution under future CWD
+```{r}
+
+raster_files2 <- c("CANCOVmn.tif", 
+                  "OGSImn.tif",
+                  "CWDmn2.tif", # End-century CWD
+                  "FRmn.tif",
+                  "ELEVmn.tif",
+                  "mTPI_270.tif",
+                  "STNDHGTmn.tif",
+                  "TDI_270mn.tif"
+                  )
+
+# Load each raster into a list
+raster_list2 <- lapply(raster_files2, raster)
+
+# Stack the rasters
+raster_stack2 <- stack(raster_list2)
+
+# Set layer names
+layer_names2 <- basename(tools::file_path_sans_ext(raster_files2))
+names(raster_stack2) <- layer_names2
+names(raster_stack2)[names(raster_stack2) == "CWDmn2"] <- "CWDmn" # match to BRT layer names
+
+# Clip rasters to NWFP boundary
+raster_stack2 <- mask(raster_stack2, boundary)
+
+# Scale the raster stack
+raster_stack2 <- scale(raster_stack2)
+
+# Save the processed raster stack as a GeoTIFF file
+writeRaster(raster_stack2, "raster_stack2.tif", format = "GTiff", overwrite = TRUE)
+# raster_stack2 <- stack("raster_stack2.tif")
+
+# Predict new distribution
+p2 <- predict(raster_stack2, 
+              BRT_all, 
+              n.trees=BRT_all$gbm.call$best.trees, 
+              na.rm=TRUE, 
+              type="response")
+
+saveRDS(p2, "p2.RDS")
+# p2 <- readRDS("p2.RDS")
+
+# Plot new predicted distribution
+plot(p2, main='IXNA predicted distribution', box = FALSE, axes = FALSE)
+
+# Crop & resample p2
+forestcover <- crop(forestcover, extent(p2))
+forestcover <- resample(forestcover, p2, method="ngb")
+masked_p2 <- mask(p2, forestcover, maskvalue=0)
+ 
+writeRaster(masked_p2, filename="IXNA_masked_p2.tif", overwrite=TRUE)
+saveRDS(masked_p2,"IXNA_masked_p2.RDS")
+# masked_p2 <- raster("IXNA_masked_p2.tif")
+
+# Plot new predicted distribution
+plot(masked_p2, main='IXNA predicted distribution', box = FALSE, axes = FALSE)
+
+```
