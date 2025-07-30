@@ -1,0 +1,50 @@
+### The following code is an R script to run an intercept-only occuppancy model to estimate how many weeks of sampling are required to detect the varied thrush
+###   at an ARU, given the species is present. The model assumes constant occupancy ψ and constant detection probability p across all sites and sampling occasions.
+
+# Clear workspace
+rm(list = ls())
+gc()
+
+# Load necessary packages
+library(dplyr)
+library(tidyr)
+library(unmarked)
+
+## Using a dataframe called sp.stns where there is a column with station id, recording week, and count of varied thrush (IXNA; per station per week)
+
+# Convert to wide df for week columns
+y_wide <- sp.stns %>%
+  pivot_wider(names_from = Rec_Week, values_from = IXNA)
+
+# Convert to matrix
+y_mat <- as.matrix(select(y_wide, -STN_ID))
+
+# Y values to 0/1/NA
+y_mat[y_mat > 1] <- 1
+
+# unmarked frame
+umf <- unmarkedFrameOccu(y = y_mat)
+
+# Fit model
+model <- occu(~1 ~1, data = umf)
+summary(model)
+# Approximately 68.2% of sites are estimated to be occupied by the species (p<0.005)
+
+p_hat <- plogis(coef(model)["p(Int)"])
+p_hat
+# Given the species is present at a site, there is about a 67% chance of detecting it during a single survey (e.g., one week)
+
+# Compute p* for increasing number of weeks
+K <- 1:ncol(y_mat)  # 8 weeks
+p_star <- 1 - (1 - p_hat)^K
+
+# Minimum K where p* > 0.99
+threshold <- 0.99
+sat_week <- min(K[p_star >= threshold])
+sat_week # by week 5
+
+# Plot
+plot(K, p_star, type = "b", pch = 19,
+     xlab = "Number of Weeks", ylab = "Cumulative Detection Probability (p*)",
+     main = paste("p* reaches", threshold, "by week", sat_week))
+abline(h = threshold, col = "red", lty = 2)
