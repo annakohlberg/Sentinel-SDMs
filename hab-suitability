@@ -21,7 +21,7 @@ plot(masked_p2) # This is the FUTURE predicted distribution of the varied thrush
 masked_diffp <- overlay(masked_p, masked_p2, fun=function(x, y) x - y) # future - current
 masked_diffp[masked_diffp < 0] <- NA
 plot(st_geometry(boundary), box = FALSE, axes = FALSE, col = "white", border = "black", lwd = 0.1)
-plot(masked_diffp, add = TRUE, main='IXNA Predicted Distribution Loss', box = FALSE, axes = FALSE, col = inferno(200, direction = -1))
+plot(masked_diffp, add = TRUE, box = FALSE, axes = FALSE, col = inferno(200, direction = -1))
 
 # Change in suitability: future - current
 suitability_change <- overlay(masked_p, masked_p2, fun = function(x, y) y - x)
@@ -69,12 +69,12 @@ newdata <- data.frame(current = seq(min(suit_df1$current),
                                     max(suit_df1$current), length.out = 100))
 newdata$predicted_deg_prob <- predict(gam_model, newdata = newdata, type = "response")
 
-# Plot
+# Plot (Supplmental Figure S2)
 ggplot(newdata, aes(x = current, y = predicted_deg_prob)) +
   geom_line(color = "blue", size = 1.2) +
-  labs(x = "Current Suitability",
-       y = "Probability of Degradation",
-       title = "Habitat Degradation across Current Suitability") +
+  labs(x = "Current suitability",
+       y = "Probability of degradation",
+       title = "Probability of habitat degredation") +
   theme_minimal()
 
 
@@ -94,10 +94,10 @@ gam_model2 <- gam(abs_loss ~ s(current), data = suit_df2, family = gaussian)
 newdata2 <- data.frame(current = seq(min(suit_df2$current), max(suit_df2$current), length.out = 100))
 newdata2$predicted_abs_loss <- predict(gam_model2, newdata = newdata2, type = "response")
 
-# Plot
+# Plot (Supplmental Figure S2)
 ggplot(newdata2, aes(x = current, y = predicted_abs_loss)) +
   geom_line(color = "blue", size = 1.2) +
-  labs(x = "Current Suitability",
-       y = "Predicted Magnitude of Loss",
-       title = "Magnitude of Loss across Current Suitability") +
+  labs(x = "Current suitability",
+       y = "Predicted magnitude of loss (%)",
+       title = "Magnitude of habitat degradation") +
   theme_minimal()
