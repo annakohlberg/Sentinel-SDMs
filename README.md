@@ -1,2 +1,2 @@
 # Sentinel-SDMs
-Code to model the current and projected distribution of a forest-dependent sentinel, the varied thrush (_Ixoreus naevius_), across federally managed forests in the Pacific Northwest, USA. 
+Code to model the current and projected distribution of a forest-dependent sentinel, the varied thrush (_Ixoreus naevius_), across federally managed forests in the Pacific Northwest, USA. **code-main** is the Rmarkdown script that builds our boosted regression tree model and makes the predictive distribution maps that are needed to run **code-hab-suitability**. The **code-det-probability** file is an intercept-only occuppancy model to estimate how many weeks of sampling are required to detect the varied thrush, given the species is present. 
