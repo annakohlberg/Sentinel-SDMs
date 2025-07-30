@@ -1,0 +1,103 @@
+### The following code is a Rmarkdown script used to quantify the probability and magnitude of habitat suitability degradation under future climatic water deficit scenarios
+
+# Clear workspace
+rm(list = ls())
+gc()
+
+# Load necessary packages
+library(raster)
+library(ggplot2)
+library(dplyr)
+library(mgcv)
+
+# Read in rasters of current and future predicted distribution maps from code-main
+masked_p <- raster("IXNA_masked_p.tif")
+masked_p2 <- raster("IXNA_masked_p2.tif")
+
+plot(masked_p) # This is the CURRENT predicted distribution of the varied thrush
+plot(masked_p2) # This is the FUTURE predicted distribution of the varied thrush
+
+### Plot the difference
+masked_diffp <- overlay(masked_p, masked_p2, fun=function(x, y) x - y) # future - current
+masked_diffp[masked_diffp < 0] <- NA
+plot(st_geometry(boundary), box = FALSE, axes = FALSE, col = "white", border = "black", lwd = 0.1)
+plot(masked_diffp, add = TRUE, main='IXNA Predicted Distribution Loss', box = FALSE, axes = FALSE, col = inferno(200, direction = -1))
+
+# Change in suitability: future - current
+suitability_change <- overlay(masked_p, masked_p2, fun = function(x, y) y - x)
+
+# Filter to only look at decreased suitability
+suitability_decreased <- suitability_change < 0
+plot(suitability_decreased) # Everywhere there was a decrease from current to future
+
+# Total decrease in suitability 
+decreased_pixel_count <- cellStats(suitability_decreased, stat = "sum")
+
+# Convert to km² (270m res)
+pixel_area_km2 <- 0.0729  # 270m x 270m
+
+# Total area decreased (in km²)
+total_area_decreased_km2 <- decreased_pixel_count * pixel_area_km2
+
+# Total number of valid (non-NA) pixels
+valid_pixel_count <- cellStats(!is.na(masked_p), stat = "sum")
+total_area_km2 <- valid_pixel_count * pixel_area_km2
+
+# Proportion of area decreased
+proportion_decreased <- total_area_decreased_km2 / total_area_km2
+print(paste("Proportion of area decreased:", proportion_lost)) # 70% of habitat decreases
+
+
+### Probability of degradation given current suitability
+
+# Stack rasters then combine into a dataframe
+suit_stack <- stack(masked_p, masked_p2)
+names(suit_stack) <- c("current", "future")
+suit_df <- as.data.frame(suit_stack, na.rm = TRUE)
+
+# Define loss (1 if habitat suitability decreases in the future, 0 otherwise)
+suit_df1 <- suit_df %>%
+  mutate(loss = ifelse(future < current, 1, 0))
+
+# Fit GAM 
+gam_model <- gam(loss ~ s(current), data = suit_df1, family = binomial)
+summary(gam_model)
+saveRDS(gam_model, "gam_model.RDS")
+
+# Define data to plot
+newdata <- data.frame(current = seq(min(suit_df1$current),
+                                    max(suit_df1$current), length.out = 100))
+newdata$predicted_deg_prob <- predict(gam_model, newdata = newdata, type = "response")
+
+# Plot
+ggplot(newdata, aes(x = current, y = predicted_deg_prob)) +
+  geom_line(color = "blue", size = 1.2) +
+  labs(x = "Current Suitability",
+       y = "Probability of Degradation",
+       title = "Habitat Degradation across Current Suitability") +
+  theme_minimal()
+
+
+### Magnitude of degradation given current suitability
+
+# Define change, loss, and absolute loss
+suit_df2 <- suit_df %>%
+  filter(!is.na(current) & !is.na(future)) %>%
+  mutate(change = future - current,
+         loss = ifelse(change < 0, 1, 0),
+         abs_loss = ifelse(change < 0, -change, 0))
+  
+# Fit GAM
+gam_model2 <- gam(abs_loss ~ s(current), data = suit_df2, family = gaussian)
+
+# Define data to plot
+newdata2 <- data.frame(current = seq(min(suit_df2$current), max(suit_df2$current), length.out = 100))
+newdata2$predicted_abs_loss <- predict(gam_model2, newdata = newdata2, type = "response")
+
+# Plot
+ggplot(newdata2, aes(x = current, y = predicted_abs_loss)) +
+  geom_line(color = "blue", size = 1.2) +
+  labs(x = "Current Suitability",
+       y = "Predicted Magnitude of Loss",
+       title = "Magnitude of Loss across Current Suitability") +
+  theme_minimal()
