@@ -331,6 +331,7 @@ plot(masked_p, main='IXNA predicted distribution (masked)', box = FALSE, axes = 
 ```
 
 # Project distribution under future CWD
+### The following code is for end-century CWD levels under the RCP8.5 warming scenario. Replace the CWDmn2 raster with CWDmn3 for CWD levels under the RCP4.5 warming scenario.
 ```{r}
 
 raster_files2 <- c("CANCOVmn.tif", 
