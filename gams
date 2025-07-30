@@ -1,0 +1,621 @@
+### The following code is to fit generalizaed additive models (GAM) to assess marginal effects of predictor variables. We plot the values of the predictive raster (p) against
+###   each environmental variable to facilitate visualization and interpretation of effect size. We fit two versions of GAM: 1) GAMa; one model for each predictor to view 
+###   unadjusted effects, and 2) GAMb, where all other predictors in the model were held constant at their mean values to view marginal effects of each predictor in isolation. 
+### In the code below, we fit GAMb first.
+
+# Clear workspace
+rm(list = ls())
+gc()
+
+# Load necessary packages
+library(mgcv)
+library(raster)
+library(ggplot2)
+
+# Load saved prediction map from main-SDM
+p <- readRDS("IXNA_masked_p.RDS")
+ 
+# Load saved masked raster stack from main-SDM and raster files
+raster_stack <- stack("masked_raster_stack.tif")
+raster_files <- c("CANCOVmn.tif", 
+                  "OGSImn.tif",
+                  "CWDmn.tif",
+                  "FRmn.tif",
+                  "ELEVmn.tif",
+                  "mTPI_270.tif",
+                  "STNDHGTmn.tif",
+                  "TDI_270mn.tif"
+                  )
+
+# Remove zeros
+raster_stack <- calc(raster_stack, fun = function(x) {
+  x[x == 0] <- NA
+  return(x)
+})
+
+# Specify layer names
+layer_names <- basename(tools::file_path_sans_ext(raster_files))
+names(raster_stack) <- layer_names
+
+# View as dataframe; inspect outliers
+raster_stack_df <- na.omit(as.data.frame(raster_stack))
+
+# Clip highest and lowest percentiles
+clip_percentiles <- function(r, lower = 0.01, upper = 0.99) {
+  vals <- getValues(r)
+  lowest <- quantile(vals, probs = lower, na.rm = TRUE)
+  highest <- quantile(vals, probs = upper, na.rm = TRUE)
+  vals[vals < lowest] <- lowest
+  vals[vals > highest] <- highest
+  r[] <- vals
+  return(r)
+}
+
+# Apply to each layer in the stack
+raster_stack <- stack(lapply(unstack(raster_stack), clip_percentiles))
+
+# Scale rasters
+raster_stack <- scale(raster_stack)
+
+########################### True marginal plots (GAMb) ##########################
+
+# Fit a GAM with multiple predictors
+
+full_stack <- stack(p, raster_stack)
+names(full_stack) <- c("ixna", names(raster_stack))
+data <- na.omit(as.data.frame(full_stack))
+ 
+gam_model <- gam(ixna ~ s(CANCOVmn) + s(OGSImn) + s(CWDmn) + s(FRmn) + s(ELEVmn) + s(mTPI_270) + s(STNDHGTmn)+ s(TDI_270mn), data = data, family = quasibinomial())
+ 
+save(gam_model, file = file.path(model_directory, "gam_model.RData"))
+# load("gam_model.RData")
+
+
+###### CANCOV #####
+
+# Prepare marginal prediction: vary CANCOV, hold others at mean
+env_seqCC <- data.frame(
+  CANCOVmn = seq(min(data$CANCOVmn), max(data$CANCOVmn), length.out = 200),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsCC <- predict(gam_model, newdata = env_seqCC, type = "response", se.fit = TRUE)
+save(predsCC, file = file.path(model_directory, "predsCC.RData"))
+# load("predsCC.RData")
+
+# Plot
+CANCOVplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = CANCOVmn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqCC$CANCOVmn, y = predsCC$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqCC$CANCOVmn,
+                  ymin = predsCC$fit - 2 * predsCC$se.fit,
+                  ymax = predsCC$fit + 2 * predsCC$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Canopy Cover",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(CANCOV) (marginal plot)") +
+  theme_minimal()
+
+
+##### CWD ####
+
+# Prepare marginal prediction: vary CWD, hold others at mean
+env_seqCWD <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = seq(min(data$CWDmn), max(data$CWDmn), length.out = 200),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsCWD <- predict(gam_model, newdata = env_seqCWD, type = "response", se.fit = TRUE)
+save(predsCWD, file = file.path(model_directory, "predsCWD.RData"))
+# load("predsCWD.RData")
+
+# Plot
+CWDplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = CWDmn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqCWD$CWDmn, y = predsCWD$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqCWD$CWDmn,
+                  ymin = predsCWD$fit - 2 * predsCWD$se.fit,
+                  ymax = predsCWD$fit + 2 * predsCWD$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Climatic Water Defecit",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(CWD) (marginal plot)") +
+  theme_minimal()
+
+
+#### ELEV ####
+
+# Prepare marginal prediction: vary ELEV, hold others at mean
+env_seqELEV <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = seq(min(data$ELEVmn), max(data$ELEVmn), length.out = 200),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsELEV <- predict(gam_model, newdata = env_seqELEV, type = "response", se.fit = TRUE)
+save(predsELEV, file = file.path(model_directory, "predsELEV.RData"))
+# load("predsELEV.RData")
+
+# Plot
+ELEVplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = ELEVmn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqELEV$ELEVmn, y = predsELEV$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqELEV$ELEVmn,
+                  ymin = predsELEV$fit - 2 * predsELEV$se.fit,
+                  ymax = predsELEV$fit + 2 * predsELEV$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Elevation",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(ELEV) (marginal plot)") +
+  theme_minimal()
+
+
+#### FR ####
+
+# Prepare marginal prediction: vary FR, hold others at mean
+env_seqFR <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = seq(min(data$FRmn), max(data$FRmn), length.out = 200),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsFR <- predict(gam_model, newdata = env_seqFR, type = "response", se.fit = TRUE)
+save(predsFR, file = file.path(model_directory, "predsFR.RData"))
+load("predsFR.RData")
+
+# Plot
+FRplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = FRmn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqFR$FRmn, y = predsFR$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqFR$FRmn,
+                  ymin = predsFR$fit - 2 * predsFR$se.fit,
+                  ymax = predsFR$fit + 2 * predsFR$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Fire Refugia",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(FR) (marginal plot)") +
+  theme_minimal()
+
+
+#### mTPI ####
+
+# Prepare marginal prediction: vary mTPI, hold others at mean
+env_seqTPI <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = seq(-2.3, 2.3, length.out = 200),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsTPI <- predict(gam_model, newdata = env_seqTPI, type = "response", se.fit = TRUE)
+save(predsTPI, file = file.path(model_directory, "predsTPI.RData"))
+# load("predsTPI.RData")
+
+# Plot
+mTPIplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = mTPI_270, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqTPI$mTPI_270, y = predsTPI$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqTPI$mTPI_270,
+                  ymin = predsTPI$fit - 2 * predsTPI$se.fit,
+                  ymax = predsTPI$fit + 2 * predsTPI$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Topographic Positional Index",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(mTPI) (marginal plot)") +
+  theme_minimal()
+
+
+#### OGSI ####
+
+# Prepare marginal prediction: vary OGSI, hold others at mean
+env_seqOGSI <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = seq(min(data$OGSImn), max(data$OGSImn), length.out = 200),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsOGSI <- predict(gam_model, newdata = env_seqOGSI, type = "response", se.fit = TRUE)
+save(predsOGSI, file = file.path(model_directory, "predsOGSI.RData"))
+load("predsOGSI.RData")
+
+# Plot
+OGSIplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = OGSImn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqOGSI$OGSImn, y = predsOGSI$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqOGSI$OGSImn,
+                  ymin = predsOGSI$fit - 2 * predsOGSI$se.fit,
+                  ymax = predsOGSI$fit + 2 * predsOGSI$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Old-growth Structural Index",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(OGSI) (marginal plot)") +
+  theme_minimal()
+
+
+#### STDHGT ####
+
+# Prepare marginal prediction: vary STNDHGT, hold others at mean
+env_seqSTDHGT <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = seq(min(data$STNDHGTmn), max(data$STNDHGTmn), length.out = 200),
+  TDI_270mn = mean(data$TDI_270mn)
+)
+
+# Predict
+predsSTDHGT <- predict(gam_model, newdata = env_seqSTDHGT, type = "response", se.fit = TRUE)
+save(predsSTDHGT, file = file.path(model_directory, "predsSTDHGT.RData"))
+load("predsSTDHGT.RData")
+
+# Plot
+STNDHGTplot <- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = STNDHGTmn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqSTDHGT$STNDHGTmn, y = predsSTDHGT$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqSTDHGT$STNDHGTmn,
+                  ymin = predsSTDHGT$fit - 2 * predsSTDHGT$se.fit,
+                  ymax = predsSTDHGT$fit + 2 * predsSTDHGT$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Stand Height",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(STNDHGT) (marginal plot)") +
+  theme_minimal()
+
+
+#### TDI ####
+
+# Prepare marginal prediction: vary TDI, hold others at mean
+env_seqTDI <- data.frame(
+  CANCOVmn = mean(data$CANCOVmn),
+  CWDmn = mean(data$CWDmn),
+  ELEVmn = mean(data$ELEVmn),
+  FRmn = mean(data$FRmn),
+  mTPI_270 = mean(data$mTPI_270),
+  OGSImn = mean(data$OGSImn),
+  STNDHGTmn = mean(data$STNDHGTmn),
+  TDI_270mn = seq(min(data$TDI_270mn), max(data$TDI_270mn), length.out = 200)
+)
+
+# Predict
+predsTDI <- predict(gam_model, newdata = env_seqTDI, type = "response", se.fit = TRUE)
+save(predsTDI, file = file.path(model_directory, "predsTDI.RData"))
+# load("predsTDI.RData")
+
+# Plot
+TDIplot<- ggplot() +
+  geom_point(data = data[sample(1:nrow(data), 10000), ], aes(x = TDI_270mn, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seqTDI$TDI_270mn, y = predsTDI$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seqTDI$TDI_270mn,
+                  ymin = predsTDI$fit - 2 * predsTDI$se.fit,
+                  ymax = predsTDI$fit + 2 * predsTDI$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Topographic Diversity Index",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(TDI_270) (marginal plot)") +
+  theme_minimal()
+
+# Save plots
+plot_list <- list(
+   OGSIplot = OGSIplot,
+   CANCOVplot = CANCOVplot,
+   CWDplot = CWDplot,
+   FRplot = FRplot,
+   ELEVplot = ELEVplot,
+   mTPIplot = mTPIplot,
+   STNDHGTplot = STNDHGTplot,
+   TDIplot = TDIplot)
+
+for (name in names(plot_list)) {
+  ggsave(
+    filename = paste0(name, ".png"),   
+    plot = plot_list[[name]],
+    height = 8,
+    width = 8
+  )
+}
+
+
+
+########################### Univariate GAM plots (GAMa) ##########################
+
+#### CANCOV ####
+
+CANCOV <- raster_stack[[1]]
+
+# Stack and extract values
+cancov_stack <- stack(p, CANCOV)
+names(cancov_stack) <- c("ixna", "cancov")
+cancov <- na.omit(as.data.frame(cancov_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(cancov), data = cancov, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(cancov = seq(min(cancov$cancov), max(cancov$cancov), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+CANCOVplot2 <- ggplot() +
+  geom_point(data = cancov[sample(1:nrow(cancov), 10000), ], aes(x = cancov, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$cancov, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$cancov,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Canopy Cover",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(CANCOV)") +
+  theme_minimal()
+
+
+#### CWD ####
+
+CWD <- raster_stack[[3]]
+
+# Stack and extract values
+cwd_stack <- stack(p, CWD)
+names(cwd_stack) <- c("ixna", "cwd")
+cwd <- na.omit(as.data.frame(cwd_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(cwd), data = cwd, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(cwd = seq(min(cwd$cwd), max(cwd$cwd), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+CANOCVplot2 <- ggplot() +
+  geom_point(data = cwd[sample(1:nrow(cwd), 10000), ], aes(x = cwd, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$cwd, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$cwd,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Climatic Water Deficit",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(CWD)") +
+  theme_minimal()
+
+
+#### ELEV ####
+
+ELEV <- raster_stack[[5]]
+
+# Stack and extract values
+elev_stack <- stack(p, ELEV)
+names(elev_stack) <- c("ixna", "elev")
+elev <- na.omit(as.data.frame(elev_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(elev), data = elev, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(elev = seq(min(elev$elev), max(elev$elev), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+ELEVplot2 <- ggplot() +
+  geom_point(data = elev[sample(1:nrow(elev), 10000), ], aes(x = elev, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$elev, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$elev,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Elevation",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(ELEV)") +
+  theme_minimal()
+
+
+#### FR ####
+
+FR <- raster_stack[[4]]
+
+# Stack and extract values
+fr_stack <- stack(p, FR)
+names(fr_stack) <- c("ixna", "fr")
+fr <- na.omit(as.data.frame(fr_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(fr), data = fr, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(fr = seq(min(fr$fr), max(fr$fr), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+FRplot2 <- ggplot() +
+  geom_point(data = fr[sample(1:nrow(fr), 10000), ], aes(x = fr, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$fr, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$fr,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Fire Refugia",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(FR)") +
+  theme_minimal()
+
+
+#### mTPI ####
+
+mTPI <- raster_stack[[6]]
+
+# Stack and extract values
+mtpi_stack <- stack(p, mTPI)
+names(mtpi_stack) <- c("ixna", "mtpi")
+mtpi <- na.omit(as.data.frame(mtpi_stack))
+
+quantile(values(raster_stack[[6]]), probs = seq(0, 1, 0.01), na.rm = TRUE)
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(mtpi), data = mtpi, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(mtpi = seq(-2.3, 2.3, length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+mTPIplot2 <- ggplot() +
+  geom_point(data = mtpi[sample(1:nrow(mtpi), 10000), ], aes(x = mtpi, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$mtpi, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$mtpi,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "m-Topographic Position Index",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(mTPI)") +
+  theme_minimal()
+
+
+#### OGSI ####
+
+OGSI <- raster_stack[[2]]
+
+# Stack and extract values
+ogsi_stack <- stack(p, OGSI)
+names(ogsi_stack) <- c("ixna", "ogsi")
+ogsi <- na.omit(as.data.frame(ogsi_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(ogsi), data = ogsi, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(ogsi = seq(min(ogsi$ogsi), max(ogsi$ogsi), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+OGSIplot2 <- ggplot() +
+  geom_point(data = ogsi[sample(1:nrow(ogsi), 10000), ], aes(x = ogsi, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$ogsi, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$ogsi,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Old-growth Structural Index",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(OGSI)") +
+  theme_minimal()
+
+
+#### STNDHGT ####
+
+STNDHGT <- raster_stack[[7]]
+
+# Stack and extract values
+stdhgt_stack <- stack(p, STNDHGT)
+names(stdhgt_stack) <- c("ixna", "stdhgt")
+stdhgt <- na.omit(as.data.frame(stdhgt_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(stdhgt), data = stdhgt, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(stdhgt = seq(min(stdhgt$stdhgt), max(stdhgt$stdhgt), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+STNDHGTplot2 <- ggplot() +
+  geom_point(data = stdhgt[sample(1:nrow(stdhgt), 10000), ], aes(x = stdhgt, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$stdhgt, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$stdhgt,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Stand Height",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(STNDHGT)") +
+  theme_minimal()
+
+
+#### TDI ####
+
+TDI <- raster_stack[[8]]
+
+# Stack and extract values
+tdi_stack <- stack(p, TDI)
+names(tdi_stack) <- c("ixna", "tdi")
+tdi <- na.omit(as.data.frame(tdi_stack))
+
+# Fit GAM
+gam_model <- gam(ixna ~ s(tdi), data = tdi, family = quasibinomial())
+
+# Prepare prediction data across the range of the env variable
+env_seq <- data.frame(tdi = seq(min(tdi$tdi), max(tdi$tdi), length.out = 200))
+preds <- predict(gam_model, newdata = env_seq, type = "response", se.fit = TRUE)
+
+# Plot
+TDIplot2 <- ggplot() +
+  geom_point(data = tdi[sample(1:nrow(tdi), 10000), ], aes(x = tdi, y = ixna), alpha = 0.2) +
+  geom_line(aes(x = env_seq$tdi, y = preds$fit), color = "blue", linewidth = 1.2) +
+  geom_ribbon(aes(x = env_seq$tdi,
+                  ymin = preds$fit - 2 * preds$se.fit,
+                  ymax = preds$fit + 2 * preds$se.fit),
+              fill = "blue", alpha = 0.3) +
+  labs(x = "Topographic Diversity Index",
+       y = "Predicted Species Probability",
+       title = "GAM: IXNA ~ s(TDI)") +
+  theme_minimal()
+
+
+# Save plots
+plot_list2 <- list(
+   OGSIplot2 = OGSIplot2,
+   CANCOVplot2 = CANCOVplot2,
+   CWDplot2 = CWDplot2,
+   FRplot2 = FRplot2,
+   ELEVplot2 = ELEVplot2,
+   mTPIplot2 = mTPIplot2,
+   STNDHGTplot2 = STNDHGTplot2,
+   TDIplot2 = TDIplot2)
+
+for (name in names(plot_list2)) {
+  ggsave(
+    filename = paste0(name, ".png"),  
+    plot = plot_list[[name]],
+    height = 8,
+    width = 8
+  )
+}
